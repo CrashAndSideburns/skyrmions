@@ -95,8 +95,6 @@ class GinzburgLandau(FixedPointMethod):
         # energies.
         self.N = N
         self.α = α
-        self.β = β
-        self.κ = κ
 
         # Compute bifurcation point.
         λ2 = -α * (5 + np.cos(θ) ** 2) / 4
