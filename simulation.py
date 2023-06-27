@@ -9,7 +9,7 @@ class Simulation:
         N,
         fixed_point_method,
         energy_gradient_threshold=1e-6,
-        timestep_threshold=1e-4,
+        Δt_threshold=1e-4,
     ):
         # Invariant: N must be odd.
         assert N % 2 == 1, "N must be odd."
@@ -20,7 +20,7 @@ class Simulation:
         # distributed on the surface of a sphere.
         m = np.random.standard_normal(size=(3, N, N))
         norm = np.linalg.norm(m, axis=0)
-        self.m = m / norm
+        self.m = 0.1 * m / norm
 
         # Initialize fields related to finding fixed points.
         self.fixed_point_method = fixed_point_method
@@ -31,8 +31,8 @@ class Simulation:
         # The timestep determines the precision of the fixed point iteration.
         # If the fixed point iteration fails to converge, the timestep may have
         # to be reduced, down to some threshold.
-        self.timestep = 1
-        self.timestep_threshold = timestep_threshold
+        self.Δt = 0.1
+        self.Δt_threshold = Δt_threshold
         self.time = 0
 
     def run(self):
@@ -41,24 +41,24 @@ class Simulation:
         # converged, or until the timestep falls below the timestep threshold,
         # in which case we say that the simulation has failed to converge.
         while (
-            np.abs(self.ΔE) / self.timestep > self.energy_gradient_threshold
-            and self.timestep > self.timestep_threshold
+            np.abs(self.ΔE) / self.Δt > self.energy_gradient_threshold
+            and self.Δt > self.Δt_threshold
         ):
             try:
                 # We apply the fixed point method to obtain a new magnetization
                 # field, and compute the change in energy from the current
                 # field to the new field.
-                new_m = self.fixed_point_method.fixed_point(self.m, self.timestep)
+                new_m = self.fixed_point_method.fixed_point(self.m, self.Δt)
                 new_energy = self.fixed_point_method.energy(new_m)
                 new_ΔE = new_energy - self.energy[-1]
 
-                if ΔE < 0:
+                if new_ΔE < 0:
                     # If the fixed point method has yielded a new magnetization
                     # field with lower energy, then set it to be our current
                     # magnetization field. Unlike in the MATLAB simulation,
                     # this is the only case in which the new energy is appended
                     # to the energy list.
-                    self.time += timestep
+                    self.time += self.Δt
                     self.m = new_m
                     self.ΔE = new_ΔE
                     self.energy.append(new_energy)
@@ -66,17 +66,17 @@ class Simulation:
                     # If the fixed point method has yielded a new magnetization
                     # field with higher energy, then shrink the timestep and
                     # try again.
-                    self.timestep /= 2
+                    self.Δt /= 2
             except:
                 # A FixedPointMethod should raise an exception in the event
                 # that it fails to converge, in which case we shrink the
                 # timestep and try again.
-                self.timestep /= 2
+                self.Δt /= 2
 
 
 class FixedPointMethod(ABC):
     @abstractmethod
-    def fixed_point(self, m, timestep):
+    def fixed_point(self, m, Δt):
         pass
 
     @abstractmethod
@@ -95,6 +95,8 @@ class GinzburgLandau(FixedPointMethod):
         # energies.
         self.N = N
         self.α = α
+        self.iteration_threshold = iteration_threshold
+        self.tolerance = tolerance
 
         # Compute bifurcation point.
         λ2 = -α * (5 + np.cos(θ) ** 2) / 4
@@ -140,8 +142,48 @@ class GinzburgLandau(FixedPointMethod):
         # Construct linear term in energy gradient.
         self.L = -Δ + 2 * κ * curl + λ * self.I + β * e3
 
-    def fixed_point(self, m, timestep):
-        pass
+    def fixed_point(self, m, Δt):
+        previous_candidate = m
+        current_candidate = 10 * np.ones((3, self.N, self.N))
+
+        N = lambda u, v: -self.α * (u + v) * (u**2 + v**2) / 4
+
+        iteration = 0
+        error = np.max(np.abs(current_candidate - previous_candidate))
+
+        inv = np.linalg.inv(np.einsum("ijkl -> klij", self.I + Δt * self.L / 2))
+
+        constant_term = np.real(
+            np.fft.ifft2(
+                np.einsum(
+                    "ijkl, jkl -> ikl",
+                    np.einsum("klij, jmkl -> imkl", inv, self.I - Δt * self.L / 2),
+                    np.fft.fft2(m),
+                )
+            )
+        )
+
+        while iteration < self.iteration_threshold and error > self.tolerance:
+            current_candidate = (
+                np.real(
+                    np.fft.ifft2(
+                        np.einsum(
+                            "klij, jkl -> ikl",
+                            inv,
+                            np.fft.fft2(Δt * N(previous_candidate, m)),
+                        )
+                    )
+                )
+                + constant_term
+            )
+            error = np.max(np.abs(current_candidate - previous_candidate))
+            previous_candidate = current_candidate
+            iteration += 1
+
+        if error < self.tolerance:
+            return current_candidate
+        else:
+            raise Exception
 
     def energy(self, m):
         # The FFT must be divided by N^2 to account for the fact that the grid
