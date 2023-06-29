@@ -8,8 +8,8 @@ class Simulation:
         self,
         N,
         fixed_point_method,
-        energy_gradient_threshold=1e-6,
-        Δt_threshold=1e-4,
+        energy_gradient_threshold=1e-5,
+        Δt_threshold=1e-5,
     ):
         # Invariant: N must be odd.
         assert N % 2 == 1, "N must be odd."
@@ -99,7 +99,7 @@ class GinzburgLandau(FixedPointMethod):
         self.tolerance = tolerance
 
         # Compute bifurcation point.
-        λ2 = -α * (5 + np.cos(θ) ** 2) / 4
+        λ2 = -α
         λ0 = -1 - β / 2 + np.sqrt(4 * κ**2 + β**2 / 4)
         λ = λ0 + 0.01 * λ2
 
@@ -107,7 +107,7 @@ class GinzburgLandau(FixedPointMethod):
         # wave vectors associated with the 2D FFT of the magnetization field.
         # The somewhat strange order of the wave vectors is defined by np.fft2.
         k = np.array(list(range(int((N + 1) / 2))) + list(range(int(-(N - 1) / 2), 0)))
-        x, y = np.meshgrid(k, k)
+        y, x = np.meshgrid(k, k)
         y = -x / np.tan(θ) + y / (τ * np.sin(θ))
         norm_squared = x**2 + y**2
 
