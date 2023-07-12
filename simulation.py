@@ -20,7 +20,7 @@ class Simulation:
         # distributed on the surface of a sphere.
         m = np.random.standard_normal(size=(3, N, N))
         norm = np.linalg.norm(m, axis=0)
-        self.m = 0.1 * m / norm
+        self.m = m / norm
 
         # Initialize fields related to finding fixed points.
         self.fixed_point_method = fixed_point_method
@@ -86,7 +86,7 @@ class FixedPointMethod(ABC):
 
 class GinzburgLandau(FixedPointMethod):
     def __init__(
-        self, N, α, β, κ, τ=1, θ=np.pi / 2, iteration_threshold=500, tolerance=1e-8
+        self, N, α, β, κ, τ=1, θ=np.pi / 2, iteration_threshold=500, tolerance=1e-9
     ):
         # Invariant: N must be odd.
         assert N % 2 == 1, "N must be odd."
@@ -202,4 +202,120 @@ class GinzburgLandau(FixedPointMethod):
             np.sum(np.real(np.einsum("ijkl, jkl -> ikl", self.L, fft) * np.conj(fft)))
             / 2
             + self.α * np.average(norm**4) / 4
+        )
+
+class PenalizedFerromagnetic(FixedPointMethod):
+    def __init__(
+        self, N, κ, h, ε, τ=1, θ=np.pi / 2, iteration_threshold=500, tolerance=1e-9
+    ):
+        # Invariant: N must be odd.
+        assert N % 2 == 1, "N must be odd."
+
+        # Store parameters relevant to the computation of fixed points and
+        # energies.
+        self.N = N
+        self.ε = ε
+        self.iteration_threshold = iteration_threshold
+        self.tolerance = tolerance
+
+        # The x and y computed here correspond to the x and y components of the
+        # wave vectors associated with the 2D FFT of the magnetization field.
+        # The somewhat strange order of the wave vectors is defined by np.fft2.
+        k = np.array(list(range(int((N + 1) / 2))) + list(range(int(-(N - 1) / 2), 0)))
+        y, x = np.meshgrid(k, k)
+        y = -x / np.tan(θ) + y / (τ * np.sin(θ))
+        norm_squared = x**2 + y**2
+
+        # This defines the Laplacian operator in Fourier space.
+        # TODO: Include brief derivation in a comment explaining why this is
+        # the form that the Laplacian takes.
+        Δ = np.zeros((3, 3, N, N))
+        Δ[0][0][:][:] = Δ[1][1][:][:] = Δ[2][2][:][:] = -norm_squared
+
+        # This defines the curl operator in Fourier space.
+        # TODO: Include brief derivation in a comment explaining why this is
+        # the form that the curl takes.
+        curl = np.zeros((3, 3, N, N), dtype="complex_")
+        curl[0][2][:][:] = 1j * y
+        curl[1][2][:][:] = -1j * x
+        curl[2][0][:][:] = -1j * y
+        curl[2][1][:][:] = 1j * x
+
+        # This defines the identity operator.
+        # HACK: I strongly suspect that there is a nicer way to do this,
+        # probably using np.identity. For now, this seems to work, so I'm happy
+        # to leave it.
+        self.I = np.zeros((3, 3, N, N))
+        self.I[0][0][:][:] = np.ones((N, N))
+        self.I[1][1][:][:] = np.ones((N, N))
+        self.I[2][2][:][:] = np.ones((N, N))
+
+        # This defines the Zeeman term in the gradient flow equation. Z = [0 0 h]ᵀ.
+        self.Z = np.zeros((3, N, N))
+        self.Z[2][:][:] = h * np.ones((N, N))
+
+        # Construct linear term in energy gradient.
+        self.L = -Δ + 2 * κ * curl + h * self.I
+
+    def fixed_point(self, m, Δt):
+        previous_candidate = m
+        current_candidate = 10 * np.ones((3, self.N, self.N))
+
+        N = lambda u, v: (u + v) * (1 - (np.linalg.norm(u, axis=0)**2 + np.linalg.norm(v, axis=0)**2)/2) / (2 * self.ε**2)
+
+        iteration = 0
+        error = np.max(np.abs(current_candidate - previous_candidate))
+
+        inv = np.linalg.inv(np.einsum("ijkl -> klij", self.I + Δt * self.L / 2))
+
+        constant_term = np.real(
+            np.fft.ifft2(
+                np.einsum(
+                    "ijkl, jkl -> ikl",
+                    np.einsum("klij, jmkl -> imkl", inv, self.I - Δt * self.L / 2),
+                    np.fft.fft2(m),
+                )
+            )
+        )
+
+        while iteration < self.iteration_threshold and error > self.tolerance:
+            current_candidate = (
+                np.real(
+                    np.fft.ifft2(
+                        np.einsum(
+                            "klij, jkl -> ikl",
+                            inv,
+                            np.fft.fft2(Δt * N(previous_candidate, m) + Δt * self.Z),
+                        )
+                    )
+                )
+                + constant_term
+            )
+            error = np.max(np.abs(current_candidate - previous_candidate))
+            previous_candidate = current_candidate
+            iteration += 1
+
+        if error < self.tolerance:
+            return current_candidate
+        else:
+            raise Exception
+
+    def energy(self, m):
+        # The FFT must be divided by N^2 to account for the fact that the grid
+        # size is a constant independent of how finely or coarsely we choose to
+        # discretize the grid.
+        # TODO: Include brief derivation in a comment providing more
+        # mathematical justification for this choice.
+        fft = np.fft.fft2(m) / self.N**2
+        norm = np.linalg.norm(m, axis=0)
+        # Because the operators which constitute L are defined in Fourier
+        # space, they are applied to the FFT of m. That this is a valid
+        # technique for computing the energy follows by Plancherel's theorem,
+        # as L² norm in Fourier space is the same as the L² norm in non-Fourier
+        # space, which is the quantity that we are interested in.
+        return (
+            np.sum(np.real(np.einsum("ijkl, jkl -> ikl", self.L, fft) * np.conj(fft)))
+            / 2
+            + np.average((1 - norm**2)**2) / (4 * self.ε**2)
+            - np.average(np.einsum("ijk, ijk -> jk", self.Z, m))
         )
