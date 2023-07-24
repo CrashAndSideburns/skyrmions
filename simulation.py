@@ -13,6 +13,7 @@ class Simulation:
     ):
         # Invariant: N must be odd.
         assert N % 2 == 1, "N must be odd."
+        self.N = N
 
         # Construct random unimodular initial conditions. We use a normal
         # distribution because it is spherically symmetric, so using it to
@@ -67,11 +68,38 @@ class Simulation:
                     # field with higher energy, then shrink the timestep and
                     # try again.
                     self.Δt /= 2
-            except:
+            except FailedConvergenceException:
                 # A FixedPointMethod should raise an exception in the event
                 # that it fails to converge, in which case we shrink the
                 # timestep and try again.
                 self.Δt /= 2
+
+    def topological_degree(self):
+        k = np.array(
+            list(range(int((self.N + 1) / 2))) + list(range(int(-(self.N - 1) / 2), 0))
+        )
+        y, x = np.meshgrid(k, k)
+
+        dx = np.zeros((3, 3, self.N, self.N), dtype="complex_")
+        dx[0][0][:][:] = 1j * x
+        dx[1][1][:][:] = 1j * x
+        dx[2][2][:][:] = 1j * x
+
+        dy = np.zeros((3, 3, self.N, self.N), dtype="complex_")
+        dy[0][0][:][:] = 1j * y
+        dy[1][1][:][:] = 1j * y
+        dy[2][2][:][:] = 1j * y
+
+        dx = np.real(
+            np.fft.ifft2(np.einsum("ijkl, jkl -> ikl", dx, np.fft.fft2(self.m)))
+        )
+        dy = np.real(
+            np.fft.ifft2(np.einsum("ijkl, jkl -> ikl", dy, np.fft.fft2(self.m)))
+        )
+
+        cross_product = np.cross(dx, dy, axis=0)
+
+        return np.pi * np.average(np.einsum("ijk, ijk -> jk", cross_product, self.m))
 
 
 class FixedPointMethod(ABC):
@@ -82,6 +110,10 @@ class FixedPointMethod(ABC):
     @abstractmethod
     def energy(self, m):
         pass
+
+
+class FailedConvergenceException(Exception):
+    pass
 
 
 class GinzburgLandau(FixedPointMethod):
@@ -183,7 +215,7 @@ class GinzburgLandau(FixedPointMethod):
         if error < self.tolerance:
             return current_candidate
         else:
-            raise Exception
+            raise FailedConvergenceException
 
     def energy(self, m):
         # The FFT must be divided by N^2 to account for the fact that the grid
@@ -203,6 +235,7 @@ class GinzburgLandau(FixedPointMethod):
             / 2
             + self.α * np.average(norm**4) / 4
         )
+
 
 class PenalizedFerromagnetic(FixedPointMethod):
     def __init__(
@@ -261,7 +294,14 @@ class PenalizedFerromagnetic(FixedPointMethod):
         previous_candidate = m
         current_candidate = 10 * np.ones((3, self.N, self.N))
 
-        N = lambda u, v: (u + v) * (1 - (np.linalg.norm(u, axis=0)**2 + np.linalg.norm(v, axis=0)**2)/2) / (2 * self.ε**2)
+        N = (
+            lambda u, v: (u + v)
+            * (
+                1
+                - (np.linalg.norm(u, axis=0) ** 2 + np.linalg.norm(v, axis=0) ** 2) / 2
+            )
+            / (2 * self.ε**2)
+        )
 
         iteration = 0
         error = np.max(np.abs(current_candidate - previous_candidate))
@@ -298,7 +338,7 @@ class PenalizedFerromagnetic(FixedPointMethod):
         if error < self.tolerance:
             return current_candidate
         else:
-            raise Exception
+            raise FailedConvergenceException
 
     def energy(self, m):
         # The FFT must be divided by N^2 to account for the fact that the grid
@@ -316,6 +356,6 @@ class PenalizedFerromagnetic(FixedPointMethod):
         return (
             np.sum(np.real(np.einsum("ijkl, jkl -> ikl", self.L, fft) * np.conj(fft)))
             / 2
-            + np.average((1 - norm**2)**2) / (4 * self.ε**2)
+            + np.average((1 - norm**2) ** 2) / (4 * self.ε**2)
             - np.average(np.einsum("ijk, ijk -> jk", self.Z, m))
         )
