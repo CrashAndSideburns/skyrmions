@@ -19,7 +19,14 @@ class Simulation:
         # distribution because it is spherically symmetric, so using it to
         # generate the x, y, and z coordinates yields points uniformly
         # distributed on the surface of a sphere.
-        m = np.random.standard_normal(size=(3, N, N))
+        k = np.array(list(range(int((N + 1) / 2))) + list(range(int(-(N - 1) / 2), 0)))
+        y, x = np.meshgrid(k, k)
+        stds = 1 / ((x**2 + y**2) + 1)
+        m = np.empty((3, N, N), dtype = complex)
+        m[0][:][:] = np.array(list(map(lambda std: np.random.normal(0.0, std)+np.random.normal(0.0, std)*1j, stds)))
+        m[1][:][:] = np.array(list(map(lambda std: np.random.normal(0.0, std)+np.random.normal(0.0, std)*1j, stds)))
+        m[2][:][:] = np.array(list(map(lambda std: np.random.normal(0.0, std)+np.random.normal(0.0, std)*1j, stds)))
+        m = np.real(np.fft.ifft2(m))
         norm = np.linalg.norm(m, axis=0)
         self.m = m / norm
 
